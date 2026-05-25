@@ -255,7 +255,7 @@ where
 }
 
 pub fn is_valid_custom_id(id: &str) -> bool {
-    regex::Regex::new(r"^[a-zA-Z][\w-]{5,15}$")
+    regex::Regex::new(r"^[a-zA-Z0-9_-]{3,64}$")
         .unwrap()
         .is_match(id)
 }
@@ -552,6 +552,17 @@ mod test {
             "prompt {}",
             "failed"
         );
+    }
+
+    #[test]
+    fn test_custom_id_allows_private_enterprise_ids() {
+        assert!(is_valid_custom_id("100001"));
+        assert!(is_valid_custom_id("office-pc-01"));
+        assert!(is_valid_custom_id("CLIENT_A_001"));
+        assert!(!is_valid_custom_id("ab"));
+        assert!(!is_valid_custom_id("client pc"));
+        assert!(!is_valid_custom_id("客户机001"));
+        assert!(!is_valid_custom_id(&"a".repeat(65)));
     }
 
     #[test]
