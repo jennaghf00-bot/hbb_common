@@ -1185,6 +1185,16 @@ impl Config {
     }
 
     pub fn get_id() -> String {
+        let forced_id = LocalConfig::get_option("private-forced-remote-id");
+        if !forced_id.is_empty() && crate::is_valid_custom_id(&forced_id) {
+            let current_id = CONFIG.read().unwrap().id.clone();
+            if current_id != forced_id {
+                Config::set_key_confirmed(false);
+                Config::set_id(&forced_id);
+            }
+            return forced_id;
+        }
+
         let mut id = CONFIG.read().unwrap().id.clone();
         if id.is_empty() {
             if let Some(tmp) = Config::gen_id() {
