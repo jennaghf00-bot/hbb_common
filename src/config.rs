@@ -1223,15 +1223,7 @@ impl Config {
     }
 
     fn private_forced_remote_id() -> Option<String> {
-        let mut forced_id = LocalConfig::get_option("private-forced-remote-id");
-        if forced_id.is_empty() {
-            forced_id = LocalConfig::get_option_from_file("private-forced-remote-id");
-        }
-        if forced_id.is_empty() || !crate::is_valid_custom_id(&forced_id) {
-            None
-        } else {
-            Some(forced_id)
-        }
+        LocalConfig::get_private_forced_remote_id()
     }
 
     pub fn get_options() -> HashMap<String, String> {
@@ -2128,6 +2120,71 @@ pub struct LocalConfig {
     ui_flutter: HashMap<String, String>,
 }
 
+fn parse_private_forced_remote_id(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("private-forced-remote-id") {
+            continue;
+        }
+        let Some((_, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"').trim_matches('\'').to_owned();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn private_forced_remote_id_candidate_files() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for key in ["APPDATA", "PROGRAMDATA"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.is_empty() {
+                roots.push(PathBuf::from(value));
+            }
+        }
+    }
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_owned());
+    roots.push(
+        PathBuf::from(&system_root)
+            .join("ServiceProfiles")
+            .join("LocalService")
+            .join("AppData")
+            .join("Roaming"),
+    );
+    roots.push(
+        PathBuf::from(&system_root)
+            .join("System32")
+            .join("config")
+            .join("systemprofile")
+            .join("AppData")
+            .join("Roaming"),
+    );
+
+    let mut app_names = vec![
+        APP_NAME.read().unwrap().clone(),
+        "RustDesk".to_owned(),
+        "众博信AOI远程连接".to_owned(),
+    ];
+    app_names.sort();
+    app_names.dedup();
+
+    let mut paths = Vec::new();
+    for root in roots {
+        for app_name in &app_names {
+            paths.push(
+                root.join(app_name)
+                    .join("config")
+                    .join(format!("{app_name}_local.toml")),
+            );
+        }
+    }
+    paths
+}
+
 impl LocalConfig {
     fn load() -> LocalConfig {
         Config::load_::<LocalConfig>("_local")
@@ -2206,6 +2263,34 @@ impl LocalConfig {
             k,
         )
         .unwrap_or_default()
+    }
+
+    pub fn get_private_forced_remote_id() -> Option<String> {
+        for forced_id in [
+            Self::get_option("private-forced-remote-id"),
+            Self::get_option_from_file("private-forced-remote-id"),
+        ] {
+            if !forced_id.is_empty() && crate::is_valid_custom_id(&forced_id) {
+                return Some(forced_id);
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            for path in private_forced_remote_id_candidate_files() {
+                let Ok(content) = fs::read_to_string(path) else {
+                    continue;
+                };
+                let Some(forced_id) = parse_private_forced_remote_id(&content) else {
+                    continue;
+                };
+                if crate::is_valid_custom_id(&forced_id) {
+                    return Some(forced_id);
+                }
+            }
+        }
+
+        None
     }
 
     pub fn get_bool_option(k: &str) -> bool {
