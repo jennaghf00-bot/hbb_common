@@ -1185,8 +1185,7 @@ impl Config {
     }
 
     pub fn get_id() -> String {
-        let forced_id = LocalConfig::get_option("private-forced-remote-id");
-        if !forced_id.is_empty() && crate::is_valid_custom_id(&forced_id) {
+        if let Some(forced_id) = Config::private_forced_remote_id() {
             let current_id = CONFIG.read().unwrap().id.clone();
             if current_id != forced_id {
                 Config::set_key_confirmed(false);
@@ -1206,8 +1205,7 @@ impl Config {
     }
 
     pub fn get_id_or(b: String) -> String {
-        let forced_id = LocalConfig::get_option("private-forced-remote-id");
-        if !forced_id.is_empty() && crate::is_valid_custom_id(&forced_id) {
+        if let Some(forced_id) = Config::private_forced_remote_id() {
             let current_id = CONFIG.read().unwrap().id.clone();
             if current_id != forced_id {
                 Config::set_key_confirmed(false);
@@ -1221,6 +1219,15 @@ impl Config {
             b
         } else {
             a
+        }
+    }
+
+    fn private_forced_remote_id() -> Option<String> {
+        let forced_id = LocalConfig::get_option("private-forced-remote-id");
+        if forced_id.is_empty() || !crate::is_valid_custom_id(&forced_id) {
+            None
+        } else {
+            Some(forced_id)
         }
     }
 
@@ -1283,6 +1290,19 @@ impl Config {
     pub fn update_id() {
         // to-do: how about if one ip register a lot of ids?
         let id = Self::get_id();
+        if let Some(forced_id) = Config::private_forced_remote_id() {
+            Config::set_key_confirmed(false);
+            if id != forced_id {
+                Config::set_id(&forced_id);
+                log::info!("id kept at forced private id {}", forced_id);
+            } else {
+                log::info!(
+                    "ignore automatic id update for forced private id {}",
+                    forced_id
+                );
+            }
+            return;
+        }
         let mut rng = rand::thread_rng();
         let new_id = rng.gen_range(1_000_000_000..2_000_000_000).to_string();
         Config::set_id(&new_id);
