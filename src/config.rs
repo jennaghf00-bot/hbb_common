@@ -108,7 +108,7 @@ lazy_static::lazy_static! {
     static ref ONLINE: Mutex<HashMap<String, i64>> = Default::default();
     pub static ref PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new("".to_owned());
     pub static ref EXE_RENDEZVOUS_SERVER: RwLock<String> = Default::default();
-    pub static ref APP_NAME: RwLock<String> = RwLock::new("众博信AOI远程连接".to_owned());
+    pub static ref APP_NAME: RwLock<String> = RwLock::new("RustDesk".to_owned());
     static ref KEY_PAIR: Mutex<Option<KeyPair>> = Default::default();
     static ref USER_DEFAULT_CONFIG: RwLock<(UserDefaultConfig, Instant)> = RwLock::new((UserDefaultConfig::load(), Instant::now()));
     pub static ref NEW_STORED_PEER_CONFIG: Mutex<HashSet<String>> = Default::default();
@@ -2167,7 +2167,7 @@ fn private_forced_remote_id_candidate_files() -> Vec<PathBuf> {
     let mut app_names = vec![
         APP_NAME.read().unwrap().clone(),
         "RustDesk".to_owned(),
-        "众博信AOI远程连接".to_owned(),
+        "RustDesk".to_owned(),
     ];
     app_names.sort();
     app_names.dedup();
