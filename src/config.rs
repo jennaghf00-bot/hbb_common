@@ -5,7 +5,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
+    sync::{atomic::{AtomicBool, Ordering}, Mutex, RwLock},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -28,6 +28,18 @@ use crate::{
         encrypt_vec_or_original, symmetric_crypt,
     },
 };
+
+#[cfg(test)]
+mod identity_tests;
+#[cfg(test)]
+mod provision_tests;
+#[cfg(test)]
+mod registration_tests;
+#[cfg(test)]
+mod service_identity_tests;
+pub mod identity;
+pub mod provision;
+pub mod registration;
 
 pub const RENDEZVOUS_TIMEOUT: u64 = 12_000;
 pub const CONNECT_TIMEOUT: u64 = 18_000;
@@ -98,6 +110,8 @@ lazy_static::lazy_static! {
 
 type Size = (i32, i32, i32, i32);
 type KeyPair = (Vec<u8>, Vec<u8>);
+
+static PRIVATE_SERVICE_IDENTITY: AtomicBool = AtomicBool::new(false);
 
 lazy_static::lazy_static! {
     static ref CONFIG: RwLock<Config> = RwLock::new(Config::load());
@@ -621,9 +635,6 @@ impl Config {
     ) -> T {
         let file = Self::file_(suffix);
         let cfg = load_path(file);
-        if suffix.is_empty() {
-            log::trace!("{:?}", cfg);
-        }
         cfg
     }
 
@@ -635,6 +646,12 @@ impl Config {
     }
 
     fn load() -> Config {
+        if Self::private_service_identity_enabled() {
+            if let Err(err) = Self::prepare_private_identity() {
+                log::error!("Cannot load private service identity: {err}");
+                return Config::default();
+            }
+        }
         let mut config = Config::load_::<Config>("");
         let mut store = false;
         store |= Self::migrate_permanent_password_to_hashed_storage(&mut config);
@@ -712,11 +729,94 @@ impl Config {
     }
 
     fn store(&self) {
+        if let Err(err) = self.try_store() {
+            log::error!("Failed to persist main config: {err}");
+        }
+    }
+
+    pub fn try_store(&self) -> crate::ResultType<()> {
         let mut config = self.clone();
         Self::migrate_permanent_password_to_hashed_storage(&mut config);
         config.enc_id = encrypt_str_or_original(&config.id, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
         config.id = "".to_owned();
-        Config::store_(&config, "");
+        if Self::private_service_identity_enabled() {
+            if config.key_pair.0.is_empty() {
+                config.key_pair = Self::prepare_private_identity()?;
+            }
+            Self::private_identity_store()?.persist(&toml::Value::try_from(config)?)
+        } else {
+            store_path(Self::file(), &config)
+        }
+    }
+
+    /// Enable before the installed service/server's first configuration access.
+    pub fn enable_private_service_identity() {
+        PRIVATE_SERVICE_IDENTITY.store(true, Ordering::SeqCst);
+    }
+
+    pub fn private_service_identity_enabled() -> bool {
+        PRIVATE_SERVICE_IDENTITY.load(Ordering::SeqCst)
+    }
+
+    fn private_identity_store() -> crate::ResultType<identity::IdentityStore> {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let machine = machine_uid::get().map_err(|_| anyhow::anyhow!("identity_machine_unavailable"))?;
+            Ok(identity::IdentityStore::new(Self::file(), machine.into_bytes()))
+        }
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        anyhow::bail!("private_service_identity_unsupported")
+    }
+
+    pub fn prepare_private_identity() -> crate::ResultType<KeyPair> {
+        Self::private_identity_store()?.load_or_create()
+    }
+
+    pub fn private_provision_store() -> crate::ResultType<provision::ProvisionStore> {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let machine = machine_uid::get().map_err(|_| anyhow::anyhow!("identity_machine_unavailable"))?;
+            Ok(provision::ProvisionStore::new(Self::file(), machine.into_bytes()))
+        }
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        anyhow::bail!("private_service_identity_unsupported")
+    }
+
+    pub fn apply_private_provision(request: &provision::ProvisionRequest, installed_admin: bool) -> crate::ResultType<provision::ProvisionOutcome> {
+        anyhow::ensure!(Self::private_service_identity_enabled(), "private_service_unavailable");
+        // Serialize existing IPC configuration writers as well as the on-disk transaction.
+        let mut main = CONFIG.write().unwrap();
+        let mut options = CONFIG2.write().unwrap();
+        let mut local = LOCAL_CONFIG.write().unwrap();
+        let store = Self::private_provision_store()?;
+        let result = store.apply(request, installed_admin)?;
+        let persisted: Config = toml::from_str(&fs::read_to_string(Self::file())?)
+            .map_err(|_| anyhow::anyhow!("provision_config_invalid"))?;
+        if result.changed {
+            *main = persisted;
+            for (key, value) in provision::desired_options(request) {
+                options.options.insert(key.into(), value.into());
+            }
+            local.options.insert("private-forced-remote-id".into(), request.remote_id.clone());
+            local.options.insert("private-settings-password".into(), request.settings_password.clone());
+            local.options.insert("private-client-mode".into(), "controlled".into());
+        }
+        Ok(result)
+    }
+
+    pub fn private_binding_identity() -> crate::ResultType<(registration::IdentityContext, bool)> {
+        let main = CONFIG.read().unwrap();
+        let store = Self::private_provision_store()?;
+        let pair = store.identity().load_or_create()?;
+        let generation = store.completed_generation()?;
+        let persisted = generation.as_ref().map(|(_, id)| id == &main.id).unwrap_or(false)
+            && main.key_pair == pair;
+        let context = registration::IdentityContext {
+            actual_id: main.id.clone(),
+            generation: generation.map(|(generation, _)| generation).unwrap_or_default(),
+            public_fingerprint: base64::encode(&Sha256::digest(&pair.1), base64::Variant::Original),
+        };
+        Ok((context, persisted))
     }
 
     pub fn file() -> PathBuf {
@@ -765,6 +865,19 @@ impl Config {
     }
 
     pub fn path<P: AsRef<Path>>(p: P) -> PathBuf {
+        #[cfg(test)]
+        {
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../..")
+                .join(".tmp/shared-config-tests");
+            let root = root.canonicalize().unwrap_or(root);
+            let profile = std::env::var_os("RUSTDESK_TEST_CONFIG_ROOT").map(PathBuf::from)
+                .filter(|path| path.starts_with(&root) && !path.components().any(|c| matches!(c, std::path::Component::ParentDir)))
+                .unwrap_or_else(|| root.join(std::process::id().to_string()));
+            return profile.join(p);
+        }
+        #[cfg(not(test))]
+        {
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             let mut path: PathBuf = APP_DIR.read().unwrap().clone().into();
@@ -786,6 +899,7 @@ impl Config {
                 return path;
             }
             "".into()
+        }
         }
     }
 
@@ -1101,6 +1215,22 @@ impl Config {
     }
 
     pub fn get_key_pair() -> KeyPair {
+        if Self::private_service_identity_enabled() {
+            let mut lock = KEY_PAIR.lock().unwrap();
+            if let Some(pair) = lock.as_ref() {
+                return pair.clone();
+            }
+            return match Self::prepare_private_identity() {
+                Ok(pair) => {
+                    *lock = Some(pair.clone());
+                    pair
+                }
+                Err(err) => {
+                    log::error!("Private identity unavailable: {err}");
+                    Default::default()
+                }
+            };
+        }
         // lock here to make sure no gen_keypair more than once
         // no use of CONFIG directly here to ensure no recursive calling in Config::load because of password dec which calling this function
         let mut lock = KEY_PAIR.lock().unwrap();
@@ -1130,6 +1260,10 @@ impl Config {
     /// Get existing key pair without generating a new one.
     /// Returns None if no key pair exists in cache or config file.
     pub fn get_existing_key_pair() -> Option<KeyPair> {
+        if Self::private_service_identity_enabled() {
+            let pair = Self::get_key_pair();
+            return (!pair.0.is_empty()).then_some(pair);
+        }
         let mut lock = KEY_PAIR.lock().unwrap();
         if let Some(p) = lock.as_ref() {
             return Some(p.clone());
@@ -1185,6 +1319,9 @@ impl Config {
     }
 
     pub fn get_id() -> String {
+        if Self::private_service_identity_enabled() {
+            return CONFIG.read().unwrap().id.clone();
+        }
         if let Some(forced_id) = Config::private_forced_remote_id() {
             let current_id = CONFIG.read().unwrap().id.clone();
             if current_id != forced_id {
@@ -1283,6 +1420,10 @@ impl Config {
     }
 
     pub fn update_id() {
+        if Self::private_service_identity_enabled() {
+            log::warn!("identity_conflict: private service will not rotate its assigned ID");
+            return;
+        }
         // to-do: how about if one ip register a lot of ids?
         let id = Self::get_id();
         if let Some(forced_id) = Config::private_forced_remote_id() {
@@ -1636,7 +1777,12 @@ impl Config {
     // TODO: `Config::set()` does not invalidate trusted devices when permanent password/salt changes.
     // This matches historical behavior, but may need revisiting in a separate PR.
     pub fn set(cfg: Config) -> bool {
+        let mut cfg = cfg;
         let mut lock = CONFIG.write().unwrap();
+        if Self::private_service_identity_enabled() {
+            // Sync/import may update preferences, never the installed service's identity.
+            cfg.key_pair = lock.key_pair.clone();
+        }
         if *lock == cfg {
             return false;
         }
