@@ -53,6 +53,12 @@ impl RegistrationTracker {
         self.error = Some(error.into());
     }
 
+    pub fn configuration_failed(&mut self, current_configuration_complete: bool) {
+        if !current_configuration_complete {
+            self.reject("configuration_incomplete");
+        }
+    }
+
     pub fn receipt(
         &self,
         identity: &IdentityContext,

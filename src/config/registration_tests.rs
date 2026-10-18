@@ -79,3 +79,14 @@ fn receipt_restart_waits_for_registration_without_a_stale_hard_error() {
     assert_eq!(receipt.error_code, None);
     assert!(!receipt.registered);
 }
+
+#[test]
+fn receipt_rejected_change_preserves_current_valid_registration() {
+    let now = Instant::now();
+    let mut tracker = RegistrationTracker::default();
+    tracker.accept(identity(), "udp", now);
+    tracker.configuration_failed(true);
+    assert!(tracker.receipt(&identity(), true, now).registered);
+    tracker.configuration_failed(false);
+    assert!(!tracker.receipt(&identity(), true, now).registered);
+}
