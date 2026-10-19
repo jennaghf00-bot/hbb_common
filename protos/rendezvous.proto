@@ -169,6 +169,28 @@ message HealthCheck {
   string token = 1;
 }
 
+message PrivateTcpHello {
+  uint32 version = 1;
+  string id = 2;
+  bytes uuid = 3;
+  bytes public_key = 4;
+  bytes ephemeral_key = 5;
+}
+
+message PrivateTcpChallenge {
+  uint32 version = 1;
+  bytes nonce = 2;
+  bytes ephemeral_key = 3;
+  bytes signature = 4;
+}
+
+message PrivateTcpProof {
+  uint32 version = 1;
+  bytes signature = 2;
+}
+
+message PrivateTcpFrame { bytes ciphertext = 1; }
+
 message RendezvousMessage {
   oneof union {
     RegisterPeer register_peer = 6;
@@ -192,5 +214,9 @@ message RendezvousMessage {
     OnlineResponse online_response = 24;
     KeyExchange key_exchange = 25;
     HealthCheck hc = 26;
+    PrivateTcpHello private_tcp_hello = 1000;
+    PrivateTcpChallenge private_tcp_challenge = 1001;
+    PrivateTcpProof private_tcp_proof = 1002;
+    PrivateTcpFrame private_tcp_frame = 1003;
   }
 }
