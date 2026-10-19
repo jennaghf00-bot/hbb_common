@@ -11,6 +11,8 @@ use sodiumoxide::{
     randombytes,
 };
 use std::time::{Duration, Instant};
+mod client;
+pub use client::register_client;
 
 pub const VERSION: u32 = 1;
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
